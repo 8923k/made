@@ -1,0 +1,32 @@
+{
+  "name": "made",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:gh-pages": "cross-env VITE_BASE=/made/ vite build",
+    "preview": "vite preview",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "element-plus": "^2.9.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^26.4.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "cross-env": "^10.1.0",
+    "eslint": "^9.18.0",
+    "eslint-plugin-vue": "^9.32.0",
+    "sass": "^1.83.4",
+    "terser": "^5.36.0",
+    "typescript-eslint": "^8.24.0",
+    "unplugin-auto-import": "^19.1.0",
+    "unplugin-vue-components": "^28.4.1",
+    "vite": "^6.0.3"
+  }
+}
