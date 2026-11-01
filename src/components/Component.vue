@@ -968,20 +968,20 @@
     .my-component-container {
       padding: calc(env(safe-area-inset-top, 0px) + 6px) calc(env(safe-area-inset-left, 0px) + 4px) calc(env(safe-area-inset-bottom, 0px) + 10px) calc(env(safe-area-inset-right, 0px) + 4px);
       --ctrl-h: 32px;
-      --tab-cell-w: 48px;
-      --tab-cell-h: 36px;
-      --cross-w: 36px;
-      --cross-h: 32px;
+      --tab-cell-w: 52px;
+      --tab-cell-h: 40px;
+      --cross-w: 40px;
+      --cross-h: 36px;
     }
   }
   @media (min-width: 376px) and (max-width: 600px) {
     .my-component-container {
       padding: calc(env(safe-area-inset-top, 0px) + 8px) calc(env(safe-area-inset-left, 0px) + 6px) calc(env(safe-area-inset-bottom, 0px) + 14px) calc(env(safe-area-inset-right, 0px) + 6px);
       --ctrl-h: 34px;
-      --tab-cell-w: 52px;
-      --tab-cell-h: 40px;
-      --cross-w: 40px;
-      --cross-h: 36px;
+      --tab-cell-w: 56px;
+      --tab-cell-h: 44px;
+      --cross-w: 44px;
+      --cross-h: 40px;
     }
   }
   @media (min-width: 601px) and (max-width: 768px) {
@@ -1136,7 +1136,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: clamp(10px, 2.6vw, 16px);
+    font-size: var(--fs-num);
     font-weight: 900;
     color: #303133;
     line-height: 1;
