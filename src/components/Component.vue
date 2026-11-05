@@ -18,15 +18,13 @@
                   typeof item === 'object' &&
                   item.displaySegments
                 "
-              >{{
+              ><span :class="item.displaySegments.sym0Class">{{
                   item.displaySegments.leftLabel
-                }}<span :class="item.displaySegments.sym0Class">{{
-                  item.displaySegments.sym0
                 }}</span>{{
                   item.displaySegments.middle
                 }}<span :class="item.displaySegments.sym1Class">{{
-                  item.displaySegments.sym1
-                }}</span>{{ item.displaySegments.rightCount }}</template>
+                  item.displaySegments.rightCount
+                }}</span></template>
               <template v-else>
                 {{ item }}
               </template>
@@ -128,30 +126,13 @@
 </template>
 
 <script>
-  const MadeKeys = [];
-  const MadeKeyInfo = {};
-  const SymbolColorClass = { '+': 'track-red', '-': 'track-blue' };
-  const MadeFirstDigits = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
-  const MadeSecondDigits = ['1', '2', '3', '4', '5'];
-  for (let i = 0; i < MadeFirstDigits.length; i++) {
-    const d1 = MadeFirstDigits[i];
-    const maxPath = d1 === '0' ? 10 : Number(d1);
-    for (let j = 0; j < MadeSecondDigits.length; j++) {
-      const d2 = MadeSecondDigits[j];
-      const base = d1 + d2;
-      MadeKeys.push(base);
-      MadeKeyInfo[base] = { leftCol: d1, rightCol: d2, value: Number(d2), maxPath, isEnhanced: false };
-      const key = `[${base}]`;
-      MadeKeys.push(key);
-      MadeKeyInfo[key] = {
-        leftCol: `[${d1}`,
-        rightCol: `${d2}]`,
-        value: Number(d2),
-        maxPath,
-        isEnhanced: true,
-      };
-    }
-  }
+  import {
+    MadeKeys,
+    MadeKeyInfo,
+    getTableArrList,
+    computeBestResult as coreComputeBestResult,
+  } from '@/utils/madeCore.js';
+
   export default {
     data() {
       return {
@@ -162,7 +143,7 @@
         selectedMadeKey: '11',
         compareNumberList: [12890, 12390, 12340, 12345, 23456, 34567, 45678, 56789, 67890, 17890],
         constList: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
-        lengthLimit: 60,
+        lengthLimit: 49,
         showSubResults: true,
         tabConfig: {
           compare: 'r_+_+', // 'l'/'r' _ '+'/'-' _ '+'/'-'
@@ -474,6 +455,31 @@
         }
       },
     },
+    created() {
+      // plain (non-reactive) copies: reactive Proxy objects cannot be
+      // structured-cloned into a Worker via postMessage
+      this._consts = {
+        compareNumberList: [...this.compareNumberList],
+        constList: [...this.constList],
+        compareModes: {
+          normal: {
+            positive: [...this.compareModes.normal.positive],
+            negative: [...this.compareModes.normal.negative],
+          },
+          enhanced: {
+            positive: [...this.compareModes.enhanced.positive],
+            negative: [...this.compareModes.enhanced.negative],
+          },
+        },
+      };
+      this._workerPool = null;
+      this._workerPoolFailed = false;
+      this._computeRunId = 0;
+      this._dispatchState = null;
+    },
+    beforeUnmount() {
+      this._disposeWorkerPool();
+    },
     mounted() {
       this.handleAddNumber();
     },
@@ -486,39 +492,6 @@
         const w = el.clientWidth;
         const target = cell.offsetLeft - w / 2 + cell.offsetWidth / 2;
         el.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
-      },
-      formatColumnTrack(stageCols, symbolSeq, colLabelFn) {
-        if (!Array.isArray(stageCols) || stageCols.length === 0) return [];
-        const total = stageCols.length;
-        const formattedResult = [];
-        let currentLine = [];
-        let count = 0;
-        for (let i = 0; i < total; i++) {
-          const colIdx = stageCols[i];
-          const digit = colLabelFn(colIdx);
-          let colorClass = '';
-          if (i === total - 1) {
-            colorClass = '';
-          } else if (i < symbolSeq.length) {
-            const sym = symbolSeq[i];
-            if (sym === '+') colorClass = 'track-red';
-            else if (sym === '?') colorClass = 'track-gray';
-            else if (sym === '-') colorClass = 'track-blue';
-          }
-          currentLine.push({ text: String(digit), colorClass });
-          count++;
-          const needNewline = count % 5 === 0;
-          if (needNewline || i === total - 1) {
-            if (currentLine.length > 0) {
-              formattedResult.push(currentLine);
-            }
-            currentLine = [];
-            if (i !== total - 1) {
-              count = 0;
-            }
-          }
-        }
-        return formattedResult;
       },
       isMaxCount(item) {
         if (!item || item === '-' || typeof item !== 'object') return false;
@@ -654,161 +627,86 @@
       },
       recomputeAllMade() {
         this.clearCache();
-        this.madeResults = {};
-        const arrList = this.getTableArrList(this.showNumberList);
+        this._computeRunId++;
+        const runId = this._computeRunId;
+        const arrList = getTableArrList(this.showNumberList);
+        if (this._ensureWorkerPool()) {
+          this._dispatchState = {
+            runId: runId,
+            arrList: arrList,
+            results: {},
+            pending: MadeKeys.slice(),
+            inFlight: 0,
+          };
+          for (const worker of this._workerPool) {
+            this._dispatchNext(worker);
+          }
+          return;
+        }
+        const results = {};
         for (let i = 0; i < MadeKeys.length; i++) {
           const key = MadeKeys[i];
-          this.madeResults[key] = this.computeBestResult(key, arrList);
+          results[key] = this.computeBestResult(key, arrList);
         }
+        this.madeResults = results;
       },
-      compareSign(digitIndex, selectedDigitIndex, isEnhanced = false) {
-        const key = (isEnhanced ? 1 : 0) * 10000 + digitIndex * 100 + selectedDigitIndex;
-        const compareCache = this.compareCache;
-        if (compareCache[key] == null) {
-          const result = this.handleResult(digitIndex, selectedDigitIndex);
-          const diffLength = result.length;
-          const mode = isEnhanced ? this.compareModes.enhanced : this.compareModes.normal;
-          const inPositive = mode.positive.includes(diffLength);
-          const inNegative = mode.negative.includes(diffLength);
-          if (inPositive && !inNegative) {
-            compareCache[key] = '-';
-          } else if (inNegative && !inPositive) {
-            compareCache[key] = '+';
-          } else {
-            compareCache[key] = '?';
-          }
-        }
-        return compareCache[key];
-      },
-      breaksPattern(colorSeq) {
-        const len = this.patternLength;
-        if (!Number.isInteger(len) || len <= 0) return true;
-        for (let i = len; i < colorSeq.length; i++) {
-          if (colorSeq[i] !== colorSeq[i % len]) return true;
-        }
-        return false;
-      },
-      isPeriodicColors(colorSeq) {
-        if (!this.validatePatternLength()) return false;
-        if (colorSeq.length < this.patternLength) return false;
-        return !this.breaksPattern(colorSeq);
-      },
-      computeRowForMade(madeKey, startRow, arrList, skipCols) {
+      _ensureWorkerPool() {
+        if (this._workerPoolFailed) return false;
+        if (this._workerPool) return true;
+        const pool = [];
         try {
-          const info = MadeKeyInfo[madeKey];
-          if (!info) return [];
-          if (!Array.isArray(arrList) || arrList.length === 0 || !arrList[0]) return [];
-          const totalRows = arrList[0].length;
-          const rows = totalRows - startRow;
-          if (rows < 2) return Array(10).fill('-');
-          const tabValue = info.value;
-          const isEnhanced = info.isEnhanced;
-          const maxPath = info.maxPath;
-          const colLabel = (idx) => ((idx + 1) % 10);
-          const row = [];
-          for (let startCol = 0; startCol < 10; startCol++) {
-            if (skipCols && skipCols[startCol]) {
-              row[startCol] = '-';
-              continue;
-            }
-            const firstVal = arrList[startCol] && arrList[startCol][startRow];
-            if (firstVal == null) {
-              row[startCol] = '-';
-              continue;
-            }
-            const firstColor = this.compareSign(firstVal, tabValue, isEnhanced);
-            if (firstColor === '0') {
-              row[startCol] = '-';
-              continue;
-            }
-            const path = [startCol];
-            const usedCols = [startCol];
-            const patternColors = firstColor === '?' ? [] : [firstColor];
-            for (let r = 1; r < rows && path.length < maxPath; r++) {
-              let picked = -1;
-              for (let step = 1; step <= 10; step++) {
-                const c = (path[path.length - 1] + step) % 10;
-                if (usedCols.indexOf(c) !== -1) continue;
-                const v = arrList[c] && arrList[c][startRow + r];
-                if (v == null) continue;
-                const color = this.compareSign(v, tabValue, isEnhanced);
-                if (color === '0') continue;
-                if (color !== '?' && this.breaksPattern(patternColors.concat([color]))) continue;
-                picked = c;
-                if (color !== '?') patternColors.push(color);
-                break;
+          const size = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, 8));
+          for (let i = 0; i < size; i++) {
+            const worker = new Worker(new URL('../workers/madeWorker.js', import.meta.url), { type: 'module' });
+            worker.onmessage = (e) => this._onWorkerMessage(worker, e.data);
+            worker.onerror = () => {
+              this._disposeWorkerPool();
+              this._workerPoolFailed = true;
+              if (this._dispatchState && this._dispatchState.runId === this._computeRunId) {
+                this._dispatchState = null;
+                this.recomputeAllMade();
               }
-              if (picked < 0) break;
-              path.push(picked);
-              usedCols.push(picked);
-            }
-            const cols = [];
-            const colorSeq = [];
-            for (let r = 0; r < rows; r++) {
-              const c = path[r % path.length];
-              cols.push(c);
-              const v = arrList[c] && arrList[c][startRow + r];
-              colorSeq.push(v == null ? '0' : this.compareSign(v, tabValue, isEnhanced));
-            }
-            const filteredSeq = colorSeq.filter((s) => s !== '0');
-            const redBlueSeq = filteredSeq.filter((s) => s !== '?');
-            if (!this.isPeriodicColors(redBlueSeq)) {
-              row[startCol] = '-';
-              continue;
-            }
-            const fullSymbols = filteredSeq.join('');
-            const symbols = [];
-            let count = 0;
-            for (let i = filteredSeq.length - 1; i >= 0 && count < 2; i--) {
-              if (filteredSeq[i] !== '?') {
-                symbols.unshift(filteredSeq[i]);
-                count++;
-              }
-            }
-            while (symbols.length < 2) {
-              symbols.push('*');
-            }
-            const cc = this.countPmAndQ(fullSymbols);
-            const badgePm = cc.pmCount + 1;
-            const badgeCountVal = badgePm + cc.qCount;
-            const leftLabel = String(badgeCountVal);
-            const rightCount = badgePm;
-            let nextCol = path[rows % path.length];
-            if (path.length === rows && path.length < maxPath) {
-              for (let step = 1; step <= 10; step++) {
-                const candidate = (path[path.length - 1] + step) % 10;
-                if (usedCols.indexOf(candidate) === -1) {
-                  nextCol = candidate;
-                  break;
-                }
-              }
-            }
-            const trackCols = cols.concat([nextCol]);
-            const nextColDigit = colLabel(nextCol);
-            const merged = String(nextColDigit) + String(tabValue);
-            const maybeBracketed = isEnhanced ? `[${merged}]` : merged;
-            const s0 = symbols[0];
-            const s1 = symbols[1];
-            row[startCol] = {
-              displaySegments: {
-                leftLabel: leftLabel,
-                sym0: s0,
-                sym0Class: SymbolColorClass[s0] || '',
-                middle: maybeBracketed,
-                sym1: s1,
-                sym1Class: SymbolColorClass[s1] || '',
-                rightCount: rightCount,
-              },
-              fullSymbols: fullSymbols,
-              formattedColumnTrack: this.formatColumnTrack(trackCols, colorSeq, colLabel),
-              isEffective: true,
-              leftVal: badgeCountVal,
-              rightVal: rightCount,
             };
+            pool.push(worker);
           }
-          return row;
+          this._workerPool = pool;
+          return true;
         } catch {
-          return [];
+          for (const worker of pool) worker.terminate();
+          this._workerPoolFailed = true;
+          return false;
+        }
+      },
+      _disposeWorkerPool() {
+        if (!this._workerPool) return;
+        for (const worker of this._workerPool) worker.terminate();
+        this._workerPool = null;
+      },
+      _dispatchNext(worker) {
+        const state = this._dispatchState;
+        if (!state || state.runId !== this._computeRunId) return;
+        if (state.pending.length === 0) return;
+        const key = state.pending.pop();
+        state.inFlight++;
+        worker.postMessage({
+          type: 'compute',
+          runId: state.runId,
+          key: key,
+          arrList: state.arrList,
+          consts: this._consts,
+          patternLength: this.patternLength,
+        });
+      },
+      _onWorkerMessage(worker, msg) {
+        const state = this._dispatchState;
+        if (!state || !msg || msg.runId !== state.runId || msg.runId !== this._computeRunId) return;
+        state.results[msg.key] = msg.result;
+        state.inFlight--;
+        if (state.pending.length > 0) {
+          this._dispatchNext(worker);
+        } else if (state.inFlight === 0) {
+          this._dispatchState = null;
+          this.madeResults = state.results;
         }
       },
       getItemsForMade(madeKey) {
@@ -822,57 +720,12 @@
         }
         return items;
       },
-      validatePatternLength() {
-        const patternLength = this.patternLength;
-        return typeof patternLength === 'number' && Number.isInteger(patternLength) && patternLength > 0;
-      },
-      countPmAndQ(resultStr) {
-        if (typeof resultStr !== 'string') return { pmCount: 0, qCount: 0 };
-        let pm = 0, q = 0;
-        for (let i = 0; i < resultStr.length; i++) {
-          const c = resultStr[i];
-          if (c === '+' || c === '-') pm++;
-          else if (c === '?') q++;
-        }
-        return { pmCount: pm, qCount: q };
-      },
       computeBestResult(madeKey, arrList) {
-        try {
-          const totalRows = arrList.length ? arrList[0].length : 0;
-          if (totalRows < 2) {
-            return Array(10).fill('-');
-          }
-          const bestResults = Array(10).fill(null);
-          const bestCounts = Array(10).fill(0);
-          const saturated = Array(10).fill(false);
-          for (let startRow = 0; startRow <= totalRows - 2; startRow++) {
-            if (saturated.every((v) => v)) break;
-            const rows = totalRows - startRow;
-            const currentResult = this.computeRowForMade(madeKey, startRow, arrList, saturated);
-            for (let col = 0; col < 10; col++) {
-              if (saturated[col]) continue;
-              const currentValue = currentResult[col];
-              if (
-                currentValue &&
-                currentValue !== '-' &&
-                typeof currentValue === 'object' &&
-                currentValue.isEffective
-              ) {
-                const currentCount = currentValue.fullSymbols.length;
-                if (currentCount > bestCounts[col]) {
-                  bestResults[col] = currentValue;
-                  bestCounts[col] = currentCount;
-                }
-                if (currentCount === rows) {
-                  saturated[col] = true;
-                }
-              }
-            }
-          }
-          return bestResults.map((result) => result || '-');
-        } catch {
-          return Array(10).fill('-');
-        }
+        return coreComputeBestResult(
+          { consts: this._consts, compareCache: this.compareCache, patternLength: this.patternLength },
+          madeKey,
+          arrList
+        );
       },
       handleAddNumber() {
         try {
@@ -886,54 +739,6 @@
         } catch {
           this.clearCache();
           this.madeResults = {};
-        }
-      },
-      getTableArrList(showNumberList) {
-        if (!Array.isArray(showNumberList) || showNumberList.length === 0) {
-          return [];
-        }
-        const arrList = [];
-        for (let col = 0; col < 10; col++) {
-          const arr = [];
-          for (let row = showNumberList.length - 1; row >= 0; row--) {
-            arr.push(
-              showNumberList[row] && showNumberList[row][col] !== undefined
-                ? showNumberList[row][col]
-                : null
-            );
-          }
-          arrList.push(arr);
-        }
-        return arrList;
-      },
-      handleResult(index1, index2) {
-        try {
-          const compareNumberList = this.compareNumberList;
-          const constList = this.constList;
-          if (
-            index1 == null ||
-            index2 == null ||
-            typeof index1 !== 'number' ||
-            typeof index2 !== 'number' ||
-            index1 < 0 ||
-            index1 >= compareNumberList.length ||
-            index2 < 0 ||
-            index2 >= compareNumberList.length
-          ) {
-            return [];
-          }
-          const val1 = compareNumberList[index1];
-          const val2 = compareNumberList[index2];
-          if (val1 == null || val2 == null) {
-            return [];
-          }
-          const arr = [...constList];
-          const arr1 = String(val1).split('');
-          const arr2 = String(val2).split('');
-          const strNumberSet = new Set((arr1.join('') + arr2.join('')).split(''));
-          return arr.filter((item) => !strNumberSet.has(item));
-        } catch {
-          return [];
         }
       },
     },
@@ -952,7 +757,7 @@
     box-sizing: border-box;
     --ctrl-h: 36px;
     --btn-w: 52px;
-    --cell-min-h: calc(var(--fs-num) * 11);
+    --cell-min-h: calc(var(--fs-num) * 10);
     --tab-cell-w: 56px;
     --tab-cell-h: 42px;
     --fs-num: clamp(14px, 2.2vw, 16px);
@@ -1267,6 +1072,10 @@
   /* noinspection CssUnusedSymbol */
   .track-blue {
     color: blue;
+  }
+  /* noinspection CssUnusedSymbol */
+  .track-black {
+    color: #303133;
   }
   .show-number-list {
     padding: 0;
